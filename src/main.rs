@@ -1,5 +1,6 @@
-use std::io::Write;
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::str;
 
 fn main() {
     let listener = match TcpListener::bind("127.0.0.1:6379") {
@@ -10,13 +11,32 @@ fn main() {
         Err(e) => panic!("Unable to start listener: {:?}", e),
     };
 
-    match listener.accept() {
-        Ok((mut socket, addr)) => {
-            println!("accepted new client: {:?}", addr);
-            socket
-                .write_all(b"+PONG\r\n")
-                .expect("Unable to write to socket");
+    loop {
+        match listener.accept() {
+            Ok((mut socket, addr)) => process(&mut socket, &addr),
+            Err(e) => println!("couldn't accept client: {:?}", e),
         }
-        Err(e) => println!("couldn't accept client: {:?}", e),
+    }
+}
+
+fn process(socket: &mut TcpStream, addr: &SocketAddr) {
+    println!("accepted new client: {:?}", addr);
+    loop {
+        let mut buffer = [0; 1024];
+
+        let n = socket
+            .read(&mut buffer)
+            .expect("Unable to read from socket");
+
+        if n == 0 {
+            println!("client disconnected: {:?}", addr);
+            break;
+        }
+
+        println!("Client sent: {:?}", str::from_utf8(&buffer[..n]));
+
+        socket
+            .write_all(b"+PONG\r\n")
+            .expect("Unable to write to socket");
     }
 }
