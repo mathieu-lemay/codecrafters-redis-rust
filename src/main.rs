@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str;
+use std::sync::{Arc, RwLock};
 use std::thread;
 
 fn main() {
@@ -12,11 +14,14 @@ fn main() {
         Err(e) => panic!("Unable to start listener: {:?}", e),
     };
 
+    let memmap: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
+
     loop {
         match listener.accept() {
             Ok((mut socket, addr)) => {
+                let memmap = Arc::clone(&memmap);
                 thread::spawn(move || {
-                    process(&mut socket, &addr);
+                    process(&mut socket, &addr, memmap);
                 });
             }
             Err(e) => println!("couldn't accept client: {:?}", e),
@@ -24,7 +29,11 @@ fn main() {
     }
 }
 
-fn process(socket: &mut TcpStream, addr: &SocketAddr) {
+fn process(
+    socket: &mut TcpStream,
+    addr: &SocketAddr,
+    memmap: Arc<RwLock<HashMap<String, String>>>,
+) {
     println!("accepted new client: {:?}", addr);
     loop {
         let mut buffer = [0; 1024];
@@ -53,6 +62,18 @@ fn process(socket: &mut TcpStream, addr: &SocketAddr) {
         let resp = match cmd {
             Command::Ping => String::from("+PONG\r\n"),
             Command::Echo(v) => format!("${}\r\n{}\r\n", v.len(), v),
+            Command::Get(k) => {
+                let map = memmap.read().expect("Mutex poisoned");
+                match map.get(&k) {
+                    Some(v) => format!("${}\r\n{}\r\n", v.len(), v),
+                    None => String::from("$-1\r\n"),
+                }
+            }
+            Command::Set(k, v) => {
+                let mut map = memmap.write().expect("Mutex poisoned");
+                map.insert(k, v);
+                String::from("+OK\r\n")
+            }
         };
 
         println!("returning resp: {:?}", resp);
@@ -67,6 +88,8 @@ fn process(socket: &mut TcpStream, addr: &SocketAddr) {
 enum Command {
     Ping,
     Echo(String),
+    Get(String),
+    Set(String, String),
 }
 
 fn parse_command(cmd: &[u8]) -> Result<Command, String> {
@@ -97,6 +120,26 @@ fn parse_command(cmd: &[u8]) -> Result<Command, String> {
         "echo" => {
             if args.len() == 1 {
                 Ok(Command::Echo(args[0].clone()))
+            } else {
+                Err(format!(
+                    "ERR wrong number of arguments for '{}' command",
+                    cmd
+                ))
+            }
+        }
+        "get" => {
+            if args.len() == 1 {
+                Ok(Command::Get(args[0].clone()))
+            } else {
+                Err(format!(
+                    "ERR wrong number of arguments for '{}' command",
+                    cmd
+                ))
+            }
+        }
+        "set" => {
+            if args.len() == 2 {
+                Ok(Command::Set(args[0].clone(), args[1].clone()))
             } else {
                 Err(format!(
                     "ERR wrong number of arguments for '{}' command",
