@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str;
+use std::thread;
 
 fn main() {
     let listener = match TcpListener::bind("127.0.0.1:6379") {
@@ -13,7 +14,11 @@ fn main() {
 
     loop {
         match listener.accept() {
-            Ok((mut socket, addr)) => process(&mut socket, &addr),
+            Ok((mut socket, addr)) => {
+                thread::spawn(move || {
+                    process(&mut socket, &addr);
+                });
+            }
             Err(e) => println!("couldn't accept client: {:?}", e),
         }
     }
