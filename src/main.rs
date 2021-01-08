@@ -38,10 +38,72 @@ fn process(socket: &mut TcpStream, addr: &SocketAddr) {
             break;
         }
 
-        println!("Client sent: {:?}", str::from_utf8(&buffer[..n]));
+        let cmd = match parse_command(&buffer[..n]) {
+            Ok(c) => c,
+            Err(e) => {
+                socket
+                    .write_all(format!("-{}\r\n", e).as_bytes())
+                    .expect("Unable to write to socket");
+                break;
+            }
+        };
+
+        println!("command: {:?}", cmd);
+
+        let resp = match cmd {
+            Command::Ping => String::from("+PONG\r\n"),
+            Command::Echo(v) => format!("${}\r\n{}\r\n", v.len(), v),
+        };
+
+        println!("returning resp: {:?}", resp);
 
         socket
-            .write_all(b"+PONG\r\n")
+            .write_all(&resp.as_bytes())
             .expect("Unable to write to socket");
+    }
+}
+
+#[derive(Debug)]
+enum Command {
+    Ping,
+    Echo(String),
+}
+
+fn parse_command(cmd: &[u8]) -> Result<Command, String> {
+    let cmd = match str::from_utf8(cmd) {
+        Ok(c) => c,
+        Err(e) => panic!("Error parsing cmd: {:?}", e),
+    };
+
+    println!("raw command: {:?}", cmd);
+
+    let splits = cmd
+        .split("\r\n")
+        .skip(2)
+        .step_by(2)
+        .map(|s| String::from(s.trim_end()))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<String>>();
+    let cmd = &splits[0].to_lowercase();
+
+    let args = if splits.len() > 1 {
+        splits[1..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    match cmd.as_str() {
+        "ping" => Ok(Command::Ping),
+        "echo" => {
+            if args.len() == 1 {
+                Ok(Command::Echo(args[0].clone()))
+            } else {
+                Err(format!(
+                    "ERR wrong number of arguments for '{}' command",
+                    cmd
+                ))
+            }
+        }
+        _ => Err(format!("Invalid command: {}", cmd)),
     }
 }
