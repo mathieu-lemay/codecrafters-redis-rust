@@ -4,6 +4,9 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str;
 use std::sync::{Arc, RwLock};
 use std::thread;
+use std::time::{Duration, Instant};
+
+type MemoryMap = Arc<RwLock<HashMap<String, (String, Option<Instant>)>>>;
 
 fn main() {
     let listener = match TcpListener::bind("127.0.0.1:6379") {
@@ -14,7 +17,8 @@ fn main() {
         Err(e) => panic!("Unable to start listener: {:?}", e),
     };
 
-    let memmap: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
+    // https://stackoverflow.com/a/50283931
+    let memmap: MemoryMap = Arc::new(RwLock::new(HashMap::new()));
 
     loop {
         match listener.accept() {
@@ -29,11 +33,7 @@ fn main() {
     }
 }
 
-fn process(
-    socket: &mut TcpStream,
-    addr: &SocketAddr,
-    memmap: Arc<RwLock<HashMap<String, String>>>,
-) {
+fn process(socket: &mut TcpStream, addr: &SocketAddr, memmap: MemoryMap) {
     println!("accepted new client: {:?}", addr);
     loop {
         let mut buffer = [0; 1024];
@@ -65,13 +65,23 @@ fn process(
             Command::Get(k) => {
                 let map = memmap.read().expect("Mutex poisoned");
                 match map.get(&k) {
-                    Some(v) => format!("${}\r\n{}\r\n", v.len(), v),
+                    Some((v, ex)) => {
+                        if ex.is_some() && ex.unwrap() < Instant::now() {
+                            String::from("$-1\r\n")
+                        } else {
+                            format!("${}\r\n{}\r\n", v.len(), v)
+                        }
+                    }
                     None => String::from("$-1\r\n"),
                 }
             }
-            Command::Set(k, v) => {
+            Command::Set(k, v, ex) => {
                 let mut map = memmap.write().expect("Mutex poisoned");
-                map.insert(k, v);
+                let ex = match ex {
+                    Some(t) => Some(Instant::now() + Duration::from_millis(t)),
+                    None => None,
+                };
+                map.insert(k, (v, ex));
                 String::from("+OK\r\n")
             }
         };
@@ -89,7 +99,7 @@ enum Command {
     Ping,
     Echo(String),
     Get(String),
-    Set(String, String),
+    Set(String, String, Option<u64>),
 }
 
 fn parse_command(cmd: &[u8]) -> Result<Command, String> {
@@ -138,14 +148,41 @@ fn parse_command(cmd: &[u8]) -> Result<Command, String> {
             }
         }
         "set" => {
-            if args.len() == 2 {
-                Ok(Command::Set(args[0].clone(), args[1].clone()))
-            } else {
-                Err(format!(
+            if args.len() < 2 {
+                return Err(format!(
                     "ERR wrong number of arguments for '{}' command",
                     cmd
-                ))
+                ));
             }
+
+            let mut args = args.iter();
+            let k = args.next().unwrap();
+            let v = args.next().unwrap();
+
+            let opt = args.next();
+            let ex = match opt {
+                Some(o) => {
+                    if o != "px" {
+                        return Err(String::from("ERR syntax error"));
+                    }
+
+                    let ex = args.next();
+
+                    if ex.is_none() {
+                        return Err(String::from("ERR syntax error"));
+                    }
+
+                    match ex.unwrap().parse::<u64>() {
+                        Ok(i) => Some(i),
+                        Err(_) => {
+                            return Err(String::from("ERR syntax error"));
+                        }
+                    }
+                }
+                None => None,
+            };
+
+            Ok(Command::Set(k.to_string(), v.to_string(), ex))
         }
         _ => Err(format!("Invalid command: {}", cmd)),
     }
